@@ -46,10 +46,14 @@ import com.coursescheduler.exception.ClassroomConflictException;
 import com.coursescheduler.exception.InvalidRequestParameterException;
 import com.coursescheduler.exception.InvalidTimeSlotException;
 import com.coursescheduler.exception.NoUndoAvailableException;
+import com.coursescheduler.exception.RescheduleConflictException;
 import com.coursescheduler.exception.ScheduleNotFoundException;
 import com.coursescheduler.exception.TeacherConflictException;
 import com.coursescheduler.model.CourseSchedule;
 import com.coursescheduler.model.OperationType;
+import com.coursescheduler.model.RescheduleChange;
+import com.coursescheduler.model.RescheduleIssue;
+import com.coursescheduler.model.RescheduleItem;
 import com.coursescheduler.util.TimeSlotUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -1349,5 +1353,69 @@ public class CourseScheduleService {
                 .thenComparing((ConflictDetailDTO c) -> c.getPendingIndex(),
                         java.util.Comparator.nullsLast(Integer::compareTo))
         );
+    }
+
+    // ==================== 原子调课 ====================
+
+    /**
+     * 获取当前全部课程安排按 ID 索引的快照副本，供调课方案提交时冻结原始排课内容。
+     */
+    public Map<Long, CourseSchedule> getScheduleSnapshotById() {
+        rwLock.readLock().lock();
+        try {
+            Map<Long, CourseSchedule> snapshot = new java.util.HashMap<>();
+            for (CourseSchedule s : schedules) {
+                snapshot.put(s.getId(), new CourseSchedule(
+                        s.getId(), s.getCourseName(), s.getTeacherName(),
+                        s.getClassroom(), s.getTimeSlot()));
+            }
+            return snapshot;
+        } finally {
+            rwLock.readLock().unlock();
+        }
+    }
+
+    /**
+     * 在同一把写锁内重新评估方案并一次性应用全部调课变更。
+     *
+     * <p>评估以当前最新排课为准（提交时冻结的原始快照用于判断课程是否已被别人修改或删除），
+     * 任何一条安排不合法都抛出 {@link RescheduleConflictException}，不会留下部分调课结果。
+     *
+     * @return 每条课程调整前后的变更明细（全部变更已生效）
+     */
+    public List<RescheduleChange> applyRescheduleAtomically(List<RescheduleItem> items) {
+        rwLock.writeLock().lock();
+        try {
+            Map<Long, CourseSchedule> currentById = new java.util.HashMap<>();
+            for (CourseSchedule s : schedules) {
+                currentById.put(s.getId(), s);
+            }
+
+            List<RescheduleIssue> issues = RescheduleConflictSupport.evaluate(items, currentById);
+            if (!issues.isEmpty()) {
+                throw new RescheduleConflictException("调课方案存在冲突，整份方案未生效", issues);
+            }
+
+            commitUndoSnapshot(takeUndoSnapshot());
+
+            List<RescheduleChange> changes = new ArrayList<>();
+            for (RescheduleItem item : items) {
+                CourseSchedule schedule = currentById.get(item.getScheduleId());
+                changes.add(new RescheduleChange(
+                        item.getItemIndex(),
+                        schedule.getId(),
+                        schedule.getCourseName(),
+                        schedule.getTeacherName(),
+                        schedule.getClassroom(),
+                        schedule.getTimeSlot(),
+                        item.getTargetClassroom(),
+                        item.getTargetTimeSlot()));
+                schedule.setClassroom(item.getTargetClassroom());
+                schedule.setTimeSlot(item.getTargetTimeSlot());
+            }
+            return changes;
+        } finally {
+            rwLock.writeLock().unlock();
+        }
     }
 }

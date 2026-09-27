@@ -22,6 +22,27 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(response, HttpStatus.NOT_FOUND);
     }
 
+    @ExceptionHandler(ReschedulePlanNotFoundException.class)
+    public ResponseEntity<Map<String, String>> handleReschedulePlanNotFoundException(ReschedulePlanNotFoundException ex) {
+        Map<String, String> response = new HashMap<>();
+        response.put("error", ex.getMessage());
+        return new ResponseEntity<>(response, HttpStatus.NOT_FOUND);
+    }
+
+    @ExceptionHandler(RescheduleConflictException.class)
+    public ResponseEntity<Map<String, String>> handleRescheduleConflictException(RescheduleConflictException ex) {
+        Map<String, String> response = new HashMap<>();
+        response.put("error", ex.getMessage());
+        return new ResponseEntity<>(response, HttpStatus.CONFLICT);
+    }
+
+    @ExceptionHandler(ReschedulePlanProcessedException.class)
+    public ResponseEntity<Map<String, String>> handleReschedulePlanProcessedException(ReschedulePlanProcessedException ex) {
+        Map<String, String> response = new HashMap<>();
+        response.put("error", ex.getMessage());
+        return new ResponseEntity<>(response, HttpStatus.CONFLICT);
+    }
+
     @ExceptionHandler(TeacherConflictException.class)
     public ResponseEntity<Map<String, String>> handleTeacherConflictException(TeacherConflictException ex) {
         Map<String, String> response = new HashMap<>();
