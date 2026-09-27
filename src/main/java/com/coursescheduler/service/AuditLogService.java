@@ -77,6 +77,35 @@ public class AuditLogService {
         }
     }
 
+    /**
+     * 记录调课审计日志：courseId/courseName/teacherName 取自调整后课程，
+     * classroom/timeSlot 为调整后内容，previousClassroom/previousTimeSlot 为调整前内容。
+     */
+    public void recordRescheduleLog(CourseSchedule schedule,
+                                    String previousClassroom, String previousTimeSlot,
+                                    boolean success, String errorMessage) {
+        rwLock.writeLock().lock();
+        try {
+            AuditLog log = new AuditLog(
+                    idGenerator++,
+                    OperationType.RESCHEDULE,
+                    LocalDateTime.now(clock),
+                    schedule != null ? schedule.getId() : null,
+                    schedule != null ? schedule.getCourseName() : null,
+                    schedule != null ? schedule.getTeacherName() : null,
+                    schedule != null ? schedule.getClassroom() : null,
+                    schedule != null ? schedule.getTimeSlot() : null,
+                    success,
+                    errorMessage
+            );
+            log.setPreviousClassroom(previousClassroom);
+            log.setPreviousTimeSlot(previousTimeSlot);
+            logs.add(log);
+        } finally {
+            rwLock.writeLock().unlock();
+        }
+    }
+
     public List<AuditLogResponse> queryLogs(AuditLogFilterRequest filter) {
         rwLock.readLock().lock();
         try {
@@ -217,7 +246,7 @@ public class AuditLogService {
     }
 
     private AuditLogResponse toResponse(AuditLog log) {
-        return new AuditLogResponse(
+        AuditLogResponse response = new AuditLogResponse(
                 log.getId(),
                 log.getOperationType(),
                 log.getTimestamp(),
@@ -229,6 +258,9 @@ public class AuditLogService {
                 log.isSuccess(),
                 log.getErrorMessage()
         );
+        response.setPreviousClassroom(log.getPreviousClassroom());
+        response.setPreviousTimeSlot(log.getPreviousTimeSlot());
+        return response;
     }
 
     private ChangeSummaryResponse toSummaryResponse(AuditLog log) {

@@ -50,6 +50,8 @@ import com.coursescheduler.exception.ScheduleNotFoundException;
 import com.coursescheduler.exception.TeacherConflictException;
 import com.coursescheduler.model.CourseSchedule;
 import com.coursescheduler.model.OperationType;
+import com.coursescheduler.model.ReschedulePlanItem;
+import com.coursescheduler.dto.RescheduleConflictDTO;
 import com.coursescheduler.util.TimeSlotUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -1117,6 +1119,81 @@ public class CourseScheduleService {
         } finally {
             rwLock.writeLock().unlock();
         }
+    }
+
+    /**
+     * 获取指定 ID 课程安排的快照（副本），用于调课方案提交时保存原始排课内容。
+     */
+    public List<CourseSchedule> snapshotSchedulesByIds(java.util.Set<Long> ids) {
+        rwLock.readLock().lock();
+        try {
+            List<CourseSchedule> snapshot = new ArrayList<>();
+            for (CourseSchedule s : schedules) {
+                if (ids.contains(s.getId())) {
+                    snapshot.add(copySchedule(s));
+                }
+            }
+            return snapshot;
+        } finally {
+            rwLock.readLock().unlock();
+        }
+    }
+
+    /**
+     * 获取全部课程安排的快照（副本），用于调课方案预检查。
+     */
+    public List<CourseSchedule> snapshotAllSchedules() {
+        rwLock.readLock().lock();
+        try {
+            List<CourseSchedule> snapshot = new ArrayList<>();
+            for (CourseSchedule s : schedules) {
+                snapshot.add(copySchedule(s));
+            }
+            return snapshot;
+        } finally {
+            rwLock.readLock().unlock();
+        }
+    }
+
+    /**
+     * 原子地应用整份调课方案。
+     *
+     * <p>在写锁内重新校验：每条课程仍存在且与方案提交时的快照一致、
+     * 调整后不与方案外课程冲突、方案内部互不冲突。任一校验失败则整份方案
+     * 不生效并返回全部冲突明细；全部通过才一次性应用所有变更。
+     *
+     * @return 冲突明细，空列表表示方案已成功应用
+     */
+    public List<RescheduleConflictDTO> applyRescheduleAtomically(List<ReschedulePlanItem> items) {
+        rwLock.writeLock().lock();
+        try {
+            List<RescheduleConflictDTO> conflicts = RescheduleConflictSupport.computeConflicts(schedules, items);
+            if (!conflicts.isEmpty()) {
+                for (ReschedulePlanItem item : items) {
+                    auditLogService.recordLog(OperationType.RESCHEDULE, item.getScheduleId(),
+                            item.getCourseName(), item.getTeacherName(),
+                            item.getNewClassroom(), item.getNewTimeSlot(),
+                            false, "调课方案未生效：存在冲突");
+                }
+                return conflicts;
+            }
+
+            commitUndoSnapshot(takeUndoSnapshot());
+            for (ReschedulePlanItem item : items) {
+                CourseSchedule schedule = findById(item.getScheduleId());
+                schedule.setClassroom(item.getNewClassroom());
+                schedule.setTimeSlot(item.getNewTimeSlot());
+                auditLogService.recordRescheduleLog(
+                        schedule, item.getOriginalClassroom(), item.getOriginalTimeSlot(), true, null);
+            }
+            return new ArrayList<>();
+        } finally {
+            rwLock.writeLock().unlock();
+        }
+    }
+
+    private CourseSchedule copySchedule(CourseSchedule s) {
+        return new CourseSchedule(s.getId(), s.getCourseName(), s.getTeacherName(), s.getClassroom(), s.getTimeSlot());
     }
 
     private void checkBatchTimeSlotExternalConflicts(

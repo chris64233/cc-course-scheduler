@@ -7,5 +7,6 @@ public enum OperationType {
     BATCH_CREATE,
     BATCH_DELETE,
     BATCH_UPDATE_TIME_SLOT,
+    RESCHEDULE,
     UNDO
 }

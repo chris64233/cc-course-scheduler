@@ -13,6 +13,8 @@ public class AuditLog {
     private String timeSlot;
     private boolean success;
     private String errorMessage;
+    private String previousClassroom;
+    private String previousTimeSlot;
 
     public AuditLog() {}
 
@@ -109,5 +111,21 @@ public class AuditLog {
 
     public void setErrorMessage(String errorMessage) {
         this.errorMessage = errorMessage;
+    }
+
+    public String getPreviousClassroom() {
+        return previousClassroom;
+    }
+
+    public void setPreviousClassroom(String previousClassroom) {
+        this.previousClassroom = previousClassroom;
+    }
+
+    public String getPreviousTimeSlot() {
+        return previousTimeSlot;
+    }
+
+    public void setPreviousTimeSlot(String previousTimeSlot) {
+        this.previousTimeSlot = previousTimeSlot;
     }
 }
