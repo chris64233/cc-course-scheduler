@@ -69,14 +69,33 @@ import java.util.stream.Collectors;
 public class CourseScheduleService {
 
     private final List<CourseSchedule> schedules = new java.util.ArrayList<>();
-    private final ReadWriteLock rwLock = new ReentrantReadWriteLock();
+    private final ReadWriteLock rwLock;
     private final AuditLogService auditLogService;
+    /**
+     * 生效中的教室停用窗口提供器，由 {@link RoomOutageService} 注入；
+     * 为空（纯单元测试）时视为没有任何停用。
+     */
+    private OutageWindowProvider outageWindowProvider;
     private long idGenerator = 1;
     private UndoSnapshot undoSnapshot = null;
 
     @Autowired
+    public CourseScheduleService(AuditLogService auditLogService, DomainLock domainLock) {
+        this.auditLogService = auditLogService;
+        this.rwLock = domainLock.getLock();
+    }
+
+    /**
+     * 仅用于不接入停用能力的单元测试，使用服务私有锁。
+     */
     public CourseScheduleService(AuditLogService auditLogService) {
         this.auditLogService = auditLogService;
+        this.rwLock = new ReentrantReadWriteLock();
+    }
+
+    @Autowired(required = false)
+    public void setOutageWindowProvider(OutageWindowProvider outageWindowProvider) {
+        this.outageWindowProvider = outageWindowProvider;
     }
 
     private static class UndoSnapshot {
@@ -86,7 +105,8 @@ public class CourseScheduleService {
         UndoSnapshot(List<CourseSchedule> schedules, long idGenerator) {
             this.schedules = new ArrayList<>();
             for (CourseSchedule s : schedules) {
-                this.schedules.add(new CourseSchedule(s.getId(), s.getCourseName(), s.getTeacherName(), s.getClassroom(), s.getTimeSlot()));
+                this.schedules.add(new CourseSchedule(s.getId(), s.getCourseName(), s.getTeacherName(),
+                        s.getClassroom(), s.getTimeSlot(), s.getRevision()));
             }
             this.idGenerator = idGenerator;
         }
@@ -109,7 +129,7 @@ public class CourseScheduleService {
             }
             schedules.clear();
             for (CourseSchedule s : undoSnapshot.schedules) {
-                schedules.add(new CourseSchedule(s.getId(), s.getCourseName(), s.getTeacherName(), s.getClassroom(), s.getTimeSlot()));
+                schedules.add(copySchedule(s));
             }
             idGenerator = undoSnapshot.idGenerator;
             undoSnapshot = null;
@@ -539,10 +559,17 @@ public class CourseScheduleService {
             }
 
             commitUndoSnapshot(takeUndoSnapshot());
+            boolean contentChanged = !existing.getCourseName().equals(validated.courseName)
+                    || !existing.getTeacherName().equals(validated.teacherName)
+                    || !existing.getClassroom().equals(validated.classroom)
+                    || !existing.getTimeSlot().equals(validated.timeSlot);
             existing.setCourseName(validated.courseName);
             existing.setTeacherName(validated.teacherName);
             existing.setClassroom(validated.classroom);
             existing.setTimeSlot(validated.timeSlot);
+            if (contentChanged) {
+                existing.incrementRevision();
+            }
 
             auditLogService.recordLog(OperationType.UPDATE, existing, true, null);
             return toResponse(existing);
@@ -603,6 +630,19 @@ public class CourseScheduleService {
             for (ScheduleConflictSupport.ConflictMatch match : matches) {
                 conflicts.add(buildConflictDetailFromMatch(
                         match, validated.teacherName, validated.classroom, validated.timeSlot, null));
+            }
+            OutageWindowProvider.OutageWindow outageMatch =
+                    findOverlappingOutage(validated.classroom, validated.timeSlot);
+            if (outageMatch != null) {
+                conflicts.add(new ConflictDetailDTO(
+                        ConflictDetailDTO.ConflictType.CLASSROOM,
+                        (Long) null,
+                        "教室停用",
+                        null,
+                        validated.classroom,
+                        validated.timeSlot,
+                        "教室 " + validated.classroom + " 在时间段 " + validated.timeSlot
+                                + " 已临时停用（外部事件号 " + outageMatch.getEventNo() + "）"));
             }
 
             sortConflictDetails(conflicts);
@@ -741,6 +781,20 @@ public class CourseScheduleService {
                 for (ScheduleConflictSupport.PendingConflictMatch match : internalMatches) {
                     conflicts.add(buildConflictDetailFromPendingMatch(
                             match, currentItem.teacherName, currentItem.classroom, currentItem.timeSlot));
+                }
+
+                OutageWindowProvider.OutageWindow outageMatch =
+                        findOverlappingOutage(currentItem.classroom, currentItem.timeSlot);
+                if (outageMatch != null) {
+                    conflicts.add(new ConflictDetailDTO(
+                            ConflictDetailDTO.ConflictType.CLASSROOM,
+                            (Long) null,
+                            "教室停用",
+                            null,
+                            currentItem.classroom,
+                            currentItem.timeSlot,
+                            "教室 " + currentItem.classroom + " 在时间段 " + currentItem.timeSlot
+                                    + " 已临时停用（外部事件号 " + outageMatch.getEventNo() + "）"));
                 }
 
                 sortConflictDetails(conflicts);
@@ -1085,6 +1139,7 @@ public class CourseScheduleService {
             try {
                 checkBatchTimeSlotExternalConflicts(toUpdate, normalizedToTimeSlot);
                 checkBatchTimeSlotInternalConflicts(toUpdate, normalizedToTimeSlot);
+                checkBatchTimeSlotOutageConflicts(toUpdate, normalizedToTimeSlot);
             } catch (TeacherConflictException | ClassroomConflictException e) {
                 for (CourseSchedule s : toUpdate) {
                     auditLogService.recordLog(
@@ -1105,6 +1160,7 @@ public class CourseScheduleService {
             List<CourseScheduleResponse> updatedItems = new ArrayList<>();
             for (CourseSchedule schedule : toUpdate) {
                 schedule.setTimeSlot(normalizedToTimeSlot);
+                schedule.incrementRevision();
                 updatedItems.add(toResponse(schedule));
                 auditLogService.recordLog(OperationType.BATCH_UPDATE_TIME_SLOT, schedule, true, null);
             }
@@ -1156,18 +1212,20 @@ public class CourseScheduleService {
     }
 
     /**
-     * 原子地应用整份调课方案。
+     * 原子地应用整份普通调课方案。
      *
      * <p>在写锁内重新校验：每条课程仍存在且与方案提交时的快照一致、
-     * 调整后不与方案外课程冲突、方案内部互不冲突。任一校验失败则整份方案
-     * 不生效并返回全部冲突明细；全部通过才一次性应用所有变更。
+     * 调整后不与方案外课程冲突、不落入生效中的教室停用范围、方案内部互不冲突。
+     * 任一校验失败则整份方案不生效并返回全部冲突明细；全部通过才一次性应用所有变更。
      *
      * @return 冲突明细，空列表表示方案已成功应用
      */
     public List<RescheduleConflictDTO> applyRescheduleAtomically(List<ReschedulePlanItem> items) {
         rwLock.writeLock().lock();
         try {
-            List<RescheduleConflictDTO> conflicts = RescheduleConflictSupport.computeConflicts(schedules, items);
+            List<OutageWindowProvider.OutageWindow> windows = currentOutageWindows();
+            List<RescheduleConflictDTO> conflicts =
+                    RescheduleConflictSupport.computeConflicts(schedules, items, windows);
             if (!conflicts.isEmpty()) {
                 for (ReschedulePlanItem item : items) {
                     auditLogService.recordLog(OperationType.RESCHEDULE, item.getScheduleId(),
@@ -1181,8 +1239,7 @@ public class CourseScheduleService {
             commitUndoSnapshot(takeUndoSnapshot());
             for (ReschedulePlanItem item : items) {
                 CourseSchedule schedule = findById(item.getScheduleId());
-                schedule.setClassroom(item.getNewClassroom());
-                schedule.setTimeSlot(item.getNewTimeSlot());
+                applyItemChange(schedule, item.getNewClassroom(), item.getNewTimeSlot());
                 auditLogService.recordRescheduleLog(
                         schedule, item.getOriginalClassroom(), item.getOriginalTimeSlot(), true, null);
             }
@@ -1192,8 +1249,64 @@ public class CourseScheduleService {
         }
     }
 
+    /**
+     * 原子地应用整份停用修复方案。调用方（停用修复服务）须已持有域写锁，
+     * 本方法<strong>不再加锁</strong>，以保证「校验任务版本 + 应用课程变更」在同一临界区内完成。
+     *
+     * @param items         修复调整项
+     * @param outageWindows 当前生效停用窗口（含本次停用范围调整后的最新窗口）
+     * @return 冲突明细，空列表表示修复已成功应用
+     */
+    public List<RescheduleConflictDTO> applyRepairAtomicallyWhileLocked(
+            List<ReschedulePlanItem> items,
+            List<OutageWindowProvider.OutageWindow> outageWindows,
+            String operator, String referenceNo) {
+        List<RescheduleConflictDTO> conflicts =
+                RescheduleConflictSupport.computeConflicts(schedules, items, outageWindows);
+        if (!conflicts.isEmpty()) {
+            for (ReschedulePlanItem item : items) {
+                auditLogService.recordLog(OperationType.REPAIR_RESCHEDULE, item.getScheduleId(),
+                        item.getCourseName(), item.getTeacherName(),
+                        item.getNewClassroom(), item.getNewTimeSlot(),
+                        false, "停用修复方案未生效：存在冲突", operator, referenceNo);
+            }
+            return conflicts;
+        }
+
+        commitUndoSnapshot(takeUndoSnapshot());
+        for (ReschedulePlanItem item : items) {
+            CourseSchedule schedule = findById(item.getScheduleId());
+            applyItemChange(schedule, item.getNewClassroom(), item.getNewTimeSlot());
+            auditLogService.recordRescheduleLog(OperationType.REPAIR_RESCHEDULE,
+                    schedule, item.getOriginalClassroom(), item.getOriginalTimeSlot(),
+                    true, null, operator, referenceNo);
+        }
+        return new ArrayList<>();
+    }
+
+    /**
+     * 返回当前生效停用窗口快照；无停用时返回空列表。可在持有域锁时调用。
+     */
+    public List<OutageWindowProvider.OutageWindow> currentOutageWindows() {
+        if (outageWindowProvider == null) {
+            return new ArrayList<>();
+        }
+        return new ArrayList<>(outageWindowProvider.activeWindows());
+    }
+
+    private void applyItemChange(CourseSchedule schedule, String newClassroom, String newTimeSlot) {
+        boolean contentChanged = !schedule.getClassroom().equals(newClassroom)
+                || !schedule.getTimeSlot().equals(newTimeSlot);
+        schedule.setClassroom(newClassroom);
+        schedule.setTimeSlot(newTimeSlot);
+        if (contentChanged) {
+            schedule.incrementRevision();
+        }
+    }
+
     private CourseSchedule copySchedule(CourseSchedule s) {
-        return new CourseSchedule(s.getId(), s.getCourseName(), s.getTeacherName(), s.getClassroom(), s.getTimeSlot());
+        return new CourseSchedule(s.getId(), s.getCourseName(), s.getTeacherName(),
+                s.getClassroom(), s.getTimeSlot(), s.getRevision());
     }
 
     private void checkBatchTimeSlotExternalConflicts(
@@ -1219,6 +1332,21 @@ public class CourseScheduleService {
                                 ScheduleConflictSupport.ConflictType.CLASSROOM,
                                 moving.getClassroom(), targetTimeSlot, null)
                 );
+            }
+        }
+    }
+
+    private void checkBatchTimeSlotOutageConflicts(List<CourseSchedule> toUpdate, String targetTimeSlot) {
+        if (outageWindowProvider == null) {
+            return;
+        }
+        for (CourseSchedule moving : toUpdate) {
+            OutageWindowProvider.OutageWindow window =
+                    findOverlappingOutage(moving.getClassroom(), targetTimeSlot);
+            if (window != null) {
+                throw new ClassroomConflictException(
+                        "教室 " + moving.getClassroom() + " 在时间段 " + targetTimeSlot
+                                + " 已临时停用（外部事件号 " + window.getEventNo() + "），不得批量调整到该时段");
             }
         }
     }
@@ -1295,6 +1423,46 @@ public class CourseScheduleService {
                     ScheduleConflictSupport.ConflictType.CLASSROOM,
                     validated.classroom, validated.timeSlot, conflictSuffix));
         }
+
+        checkNotInOutageWindow(validated.classroom, validated.timeSlot);
+    }
+
+    /**
+     * 校验目标教室在目标时间段没有生效中的停用安排。后来新增/调整的课程不得排入已停用时段。
+     * 需在持有域锁时调用。
+     */
+    private void checkNotInOutageWindow(String classroom, String timeSlot) {
+        if (outageWindowProvider == null) {
+            return;
+        }
+        for (OutageWindowProvider.OutageWindow window : outageWindowProvider.activeWindows()) {
+            if (window.getClassroom().equals(classroom)
+                    && ScheduleConflictSupport.timeSlotsOverlap(window.getTimeSlot(), timeSlot)) {
+                throw new ClassroomConflictException(
+                        "教室 " + classroom + " 在时间段 " + timeSlot
+                                + " 已临时停用（外部事件号 " + window.getEventNo()
+                                + (window.getReason() != null && !window.getReason().isEmpty()
+                                        ? "，原因：" + window.getReason()
+                                        : "")
+                                + "），不得排入课程");
+            }
+        }
+    }
+
+    /**
+     * 查询目标教室/时间段是否落入任一停用窗口；无冲突时返回 null。
+     */
+    private OutageWindowProvider.OutageWindow findOverlappingOutage(String classroom, String timeSlot) {
+        if (outageWindowProvider == null) {
+            return null;
+        }
+        for (OutageWindowProvider.OutageWindow window : outageWindowProvider.activeWindows()) {
+            if (window.getClassroom().equals(classroom)
+                    && ScheduleConflictSupport.timeSlotsOverlap(window.getTimeSlot(), timeSlot)) {
+                return window;
+            }
+        }
+        return null;
     }
 
     private CourseSchedule createScheduleFromValidated(ValidatedScheduleData validated) {

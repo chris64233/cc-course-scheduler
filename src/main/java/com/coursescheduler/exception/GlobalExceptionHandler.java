@@ -104,6 +104,27 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(response, HttpStatus.CONFLICT);
     }
 
+    @ExceptionHandler(OutageNotFoundException.class)
+    public ResponseEntity<Map<String, String>> handleOutageNotFoundException(OutageNotFoundException ex) {
+        Map<String, String> response = new HashMap<>();
+        response.put("error", ex.getMessage());
+        return new ResponseEntity<>(response, HttpStatus.NOT_FOUND);
+    }
+
+    @ExceptionHandler(OutageConflictException.class)
+    public ResponseEntity<Map<String, String>> handleOutageConflictException(OutageConflictException ex) {
+        Map<String, String> response = new HashMap<>();
+        response.put("error", ex.getMessage());
+        return new ResponseEntity<>(response, HttpStatus.CONFLICT);
+    }
+
+    @ExceptionHandler(RepairStateException.class)
+    public ResponseEntity<Map<String, String>> handleRepairStateException(RepairStateException ex) {
+        Map<String, String> response = new HashMap<>();
+        response.put("error", ex.getMessage());
+        return new ResponseEntity<>(response, HttpStatus.CONFLICT);
+    }
+
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<Map<String, String>> handleHttpMessageNotReadableException(HttpMessageNotReadableException ex) {
         Map<String, String> response = new HashMap<>();

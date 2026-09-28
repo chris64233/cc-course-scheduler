@@ -53,13 +53,24 @@ public class ReschedulePlanService {
     private final Clock clock;
 
     private final Map<String, ReschedulePlan> plansByBizKey = new LinkedHashMap<>();
-    private final ReadWriteLock rwLock = new ReentrantReadWriteLock();
+    private final ReadWriteLock rwLock;
     private long idGenerator = 1;
 
     @Autowired
+    public ReschedulePlanService(CourseScheduleService courseScheduleService, Clock clock,
+                                 DomainLock domainLock) {
+        this.courseScheduleService = courseScheduleService;
+        this.clock = clock;
+        this.rwLock = domainLock.getLock();
+    }
+
+    /**
+     * 仅用于不接入停用能力的单元测试，使用服务私有锁。
+     */
     public ReschedulePlanService(CourseScheduleService courseScheduleService, Clock clock) {
         this.courseScheduleService = courseScheduleService;
         this.clock = clock;
+        this.rwLock = new ReentrantReadWriteLock();
     }
 
     /**

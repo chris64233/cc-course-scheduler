@@ -46,6 +46,17 @@ public class AuditLogService {
     public void recordLog(OperationType operationType, Long courseId, String courseName,
                           String teacherName, String classroom, String timeSlot,
                           boolean success, String errorMessage) {
+        recordLog(operationType, courseId, courseName, teacherName, classroom, timeSlot,
+                success, errorMessage, null, null);
+    }
+
+    /**
+     * 记录审计日志并附带处理人员和关联业务号（停用外部事件号 / 修复业务号）。
+     */
+    public void recordLog(OperationType operationType, Long courseId, String courseName,
+                          String teacherName, String classroom, String timeSlot,
+                          boolean success, String errorMessage,
+                          String operator, String referenceNo) {
         rwLock.writeLock().lock();
         try {
             AuditLog log = new AuditLog(
@@ -60,6 +71,8 @@ public class AuditLogService {
                     success,
                     errorMessage
             );
+            log.setOperator(operator);
+            log.setReferenceNo(referenceNo);
             logs.add(log);
         } finally {
             rwLock.writeLock().unlock();
@@ -84,11 +97,23 @@ public class AuditLogService {
     public void recordRescheduleLog(CourseSchedule schedule,
                                     String previousClassroom, String previousTimeSlot,
                                     boolean success, String errorMessage) {
+        recordRescheduleLog(OperationType.RESCHEDULE, schedule,
+                previousClassroom, previousTimeSlot, success, errorMessage, null, null);
+    }
+
+    /**
+     * 记录调课/停用修复审计日志，可指定操作类型（{@link OperationType#RESCHEDULE} 或
+     * {@link OperationType#REPAIR_RESCHEDULE}）、处理人员和关联业务号。
+     */
+    public void recordRescheduleLog(OperationType operationType, CourseSchedule schedule,
+                                    String previousClassroom, String previousTimeSlot,
+                                    boolean success, String errorMessage,
+                                    String operator, String referenceNo) {
         rwLock.writeLock().lock();
         try {
             AuditLog log = new AuditLog(
                     idGenerator++,
-                    OperationType.RESCHEDULE,
+                    operationType,
                     LocalDateTime.now(clock),
                     schedule != null ? schedule.getId() : null,
                     schedule != null ? schedule.getCourseName() : null,
@@ -100,9 +125,28 @@ public class AuditLogService {
             );
             log.setPreviousClassroom(previousClassroom);
             log.setPreviousTimeSlot(previousTimeSlot);
+            log.setOperator(operator);
+            log.setReferenceNo(referenceNo);
             logs.add(log);
         } finally {
             rwLock.writeLock().unlock();
+        }
+    }
+
+    /**
+     * 查询一门课程的完整变更链（时间正序）：包含普通调课、停用修复等所有成功的排课变更，
+     * 以及关联的处理人员和业务号。
+     */
+    public List<AuditLogResponse> getCourseChangeChain(Long courseId) {
+        rwLock.readLock().lock();
+        try {
+            return logs.stream()
+                    .filter(log -> courseId.equals(log.getCourseId()))
+                    .sorted(Comparator.comparing(AuditLog::getId))
+                    .map(this::toResponse)
+                    .collect(Collectors.toList());
+        } finally {
+            rwLock.readLock().unlock();
         }
     }
 
@@ -260,6 +304,8 @@ public class AuditLogService {
         );
         response.setPreviousClassroom(log.getPreviousClassroom());
         response.setPreviousTimeSlot(log.getPreviousTimeSlot());
+        response.setOperator(log.getOperator());
+        response.setReferenceNo(log.getReferenceNo());
         return response;
     }
 

@@ -17,6 +17,7 @@ import java.util.Set;
  * <p>核心规则：同一方案内课程即将腾出的旧时段/旧教室不再视为占用，
  * 因此允许两门或多门课程互换时段；但方案内课程调整后的新时段/新教室
  * 不得与未参与调课的课程产生教师或教室冲突，方案内部的新安排之间也不得冲突。
+ * 提供生效中教室停用窗口时，新时段/新教室也不得落入停用范围。
  */
 public class RescheduleConflictSupport {
 
@@ -24,14 +25,26 @@ public class RescheduleConflictSupport {
     }
 
     /**
-     * 计算整份调课方案的冲突明细。返回空列表表示方案可以生效。
-     *
-     * @param schedules 当前全部课程安排
-     * @param items     方案内的调整项（携带提交时保存的原始排课内容）
+     * 计算整份调课方案的冲突明细（不考虑教室停用）。返回空列表表示方案可以生效。
      */
     public static List<RescheduleConflictDTO> computeConflicts(
             List<CourseSchedule> schedules,
             List<ReschedulePlanItem> items
+    ) {
+        return computeConflicts(schedules, items, null);
+    }
+
+    /**
+     * 计算整份调课方案的冲突明细。返回空列表表示方案可以生效。
+     *
+     * @param schedules     当前全部课程安排
+     * @param items         方案内的调整项（携带提交时保存的原始排课内容）
+     * @param outageWindows 生效中的教室停用窗口，为空表示不校验停用
+     */
+    public static List<RescheduleConflictDTO> computeConflicts(
+            List<CourseSchedule> schedules,
+            List<ReschedulePlanItem> items,
+            List<OutageWindowProvider.OutageWindow> outageWindows
     ) {
         List<RescheduleConflictDTO> conflicts = new ArrayList<>();
 
@@ -99,6 +112,21 @@ public class RescheduleConflictSupport {
                                 ScheduleConflictSupport.buildConflictReason(
                                         ScheduleConflictSupport.ConflictType.CLASSROOM,
                                         item.getNewClassroom(), item.getNewTimeSlot(), "已有课程安排")));
+                    }
+                }
+            }
+            // 2.1 目标教室在目标时间段处于停用状态
+            if (outageWindows != null) {
+                for (OutageWindowProvider.OutageWindow window : outageWindows) {
+                    if (window.getClassroom().equals(item.getNewClassroom())
+                            && ScheduleConflictSupport.timeSlotsOverlap(window.getTimeSlot(), item.getNewTimeSlot())) {
+                        conflicts.add(new RescheduleConflictDTO(
+                                item.getScheduleId(),
+                                RescheduleConflictDTO.ConflictType.ROOM_OUTAGE,
+                                null,
+                                null,
+                                "目标教室 " + item.getNewClassroom() + " 在时间段 " + item.getNewTimeSlot()
+                                        + " 已临时停用（外部事件号 " + window.getEventNo() + "）"));
                     }
                 }
             }

@@ -17,6 +17,8 @@ public class AuditLogResponse {
     private String errorMessage;
     private String previousClassroom;
     private String previousTimeSlot;
+    private String operator;
+    private String referenceNo;
 
     public AuditLogResponse() {}
 
@@ -129,5 +131,21 @@ public class AuditLogResponse {
 
     public void setPreviousTimeSlot(String previousTimeSlot) {
         this.previousTimeSlot = previousTimeSlot;
+    }
+
+    public String getOperator() {
+        return operator;
+    }
+
+    public void setOperator(String operator) {
+        this.operator = operator;
+    }
+
+    public String getReferenceNo() {
+        return referenceNo;
+    }
+
+    public void setReferenceNo(String referenceNo) {
+        this.referenceNo = referenceNo;
     }
 }
