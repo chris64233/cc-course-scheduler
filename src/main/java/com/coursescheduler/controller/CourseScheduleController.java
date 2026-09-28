@@ -9,6 +9,7 @@ import com.coursescheduler.dto.ClassroomCourseStatisticsResponse;
 import com.coursescheduler.dto.ClassroomFreeDaySummaryResponse;
 import com.coursescheduler.dto.ClassroomWeeklySummaryResponse;
 import com.coursescheduler.dto.CourseChangeAbnormalDaysDTO;
+import com.coursescheduler.dto.CourseChangeChainResponse;
 import com.coursescheduler.dto.CourseChangeSummaryDTO;
 import com.coursescheduler.dto.CourseChangeTrendDTO;
 import com.coursescheduler.dto.FailureReasonSummaryDTO;
@@ -520,6 +521,12 @@ public class CourseScheduleController {
         filter.setOperationType(operationType);
         filter.setSuccess(success);
         return ResponseEntity.ok(auditLogService.queryLogs(filter));
+    }
+
+    /** 查询一门课程的完整变更链：新增、普通调课、停用冻结、成组修复等 */
+    @GetMapping("/{id}/change-chain")
+    public ResponseEntity<CourseChangeChainResponse> getChangeChain(@PathVariable Long id) {
+        return ResponseEntity.ok(auditLogService.getChangeChain(id));
     }
 
     @GetMapping("/change-summary")

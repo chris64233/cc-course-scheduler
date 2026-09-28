@@ -69,7 +69,8 @@ class CourseScheduleServiceTest {
     @BeforeEach
     void setUp() {
         auditLogService = new AuditLogService(Clock.systemDefaultZone());
-        scheduleService = new CourseScheduleService(auditLogService);
+        scheduleService = new CourseScheduleService(auditLogService,
+                new RoomOutageRegistry(), new SchedulingLocks());
     }
 
     private CourseScheduleCreateRequest createRequest(String courseName, String teacherName, String classroom, String timeSlot) {

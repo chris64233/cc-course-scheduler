@@ -46,11 +46,14 @@ import com.coursescheduler.exception.ClassroomConflictException;
 import com.coursescheduler.exception.InvalidRequestParameterException;
 import com.coursescheduler.exception.InvalidTimeSlotException;
 import com.coursescheduler.exception.NoUndoAvailableException;
+import com.coursescheduler.exception.RoomOutageBlockedException;
 import com.coursescheduler.exception.ScheduleNotFoundException;
 import com.coursescheduler.exception.TeacherConflictException;
 import com.coursescheduler.model.CourseSchedule;
 import com.coursescheduler.model.OperationType;
+import com.coursescheduler.model.PlanChangeItem;
 import com.coursescheduler.model.ReschedulePlanItem;
+import com.coursescheduler.model.RoomOutage;
 import com.coursescheduler.dto.RescheduleConflictDTO;
 import com.coursescheduler.util.TimeSlotUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -69,14 +72,19 @@ import java.util.stream.Collectors;
 public class CourseScheduleService {
 
     private final List<CourseSchedule> schedules = new java.util.ArrayList<>();
-    private final ReadWriteLock rwLock = new ReentrantReadWriteLock();
+    private final ReadWriteLock rwLock;
     private final AuditLogService auditLogService;
+    private final RoomOutageRegistry outageRegistry;
     private long idGenerator = 1;
     private UndoSnapshot undoSnapshot = null;
 
     @Autowired
-    public CourseScheduleService(AuditLogService auditLogService) {
+    public CourseScheduleService(AuditLogService auditLogService,
+                                 RoomOutageRegistry outageRegistry,
+                                 SchedulingLocks schedulingLocks) {
         this.auditLogService = auditLogService;
+        this.outageRegistry = outageRegistry;
+        this.rwLock = schedulingLocks.getLock();
     }
 
     private static class UndoSnapshot {
@@ -86,7 +94,7 @@ public class CourseScheduleService {
         UndoSnapshot(List<CourseSchedule> schedules, long idGenerator) {
             this.schedules = new ArrayList<>();
             for (CourseSchedule s : schedules) {
-                this.schedules.add(new CourseSchedule(s.getId(), s.getCourseName(), s.getTeacherName(), s.getClassroom(), s.getTimeSlot()));
+                this.schedules.add(copySchedule(s));
             }
             this.idGenerator = idGenerator;
         }
@@ -109,7 +117,7 @@ public class CourseScheduleService {
             }
             schedules.clear();
             for (CourseSchedule s : undoSnapshot.schedules) {
-                schedules.add(new CourseSchedule(s.getId(), s.getCourseName(), s.getTeacherName(), s.getClassroom(), s.getTimeSlot()));
+                schedules.add(copySchedule(s));
             }
             idGenerator = undoSnapshot.idGenerator;
             undoSnapshot = null;
@@ -533,16 +541,26 @@ public class CourseScheduleService {
 
             try {
                 checkConflictsAgainstList(schedules, validated, id, "");
-            } catch (TeacherConflictException | ClassroomConflictException e) {
+                ensureNotBlockedByOutage(validated.classroom, validated.timeSlot);
+            } catch (TeacherConflictException | ClassroomConflictException
+                     | RoomOutageBlockedException e) {
                 auditLogService.recordLog(OperationType.UPDATE, id, validated.courseName, validated.teacherName, validated.classroom, validated.timeSlot, false, e.getMessage());
                 throw e;
             }
+
+            boolean contentChanged = !existing.getCourseName().equals(validated.courseName)
+                    || !existing.getTeacherName().equals(validated.teacherName)
+                    || !existing.getClassroom().equals(validated.classroom)
+                    || !existing.getTimeSlot().equals(validated.timeSlot);
 
             commitUndoSnapshot(takeUndoSnapshot());
             existing.setCourseName(validated.courseName);
             existing.setTeacherName(validated.teacherName);
             existing.setClassroom(validated.classroom);
             existing.setTimeSlot(validated.timeSlot);
+            if (contentChanged) {
+                existing.setVersion(existing.getVersion() + 1);
+            }
 
             auditLogService.recordLog(OperationType.UPDATE, existing, true, null);
             return toResponse(existing);
@@ -569,7 +587,9 @@ public class CourseScheduleService {
 
             try {
                 checkConflictsAgainstList(schedules, validated, null, "");
-            } catch (TeacherConflictException | ClassroomConflictException e) {
+                ensureNotBlockedByOutage(validated.classroom, validated.timeSlot);
+            } catch (TeacherConflictException | ClassroomConflictException
+                     | RoomOutageBlockedException e) {
                 auditLogService.recordLog(OperationType.CREATE, null, validated.courseName, validated.teacherName, validated.classroom, validated.timeSlot, false, e.getMessage());
                 throw e;
             }
@@ -1002,12 +1022,15 @@ public class CourseScheduleService {
                             "已有课程安排"
                     );
 
+                    ensureNotBlockedByOutage(validated.classroom, validated.timeSlot);
+
                     CourseSchedule schedule = createScheduleFromValidated(validated);
                     batchCreatedSchedules.add(schedule);
                     successItems.add(toResponse(schedule));
                     auditLogService.recordLog(OperationType.BATCH_CREATE, schedule, true, null);
                 } catch (InvalidRequestParameterException | InvalidTimeSlotException |
-                         TeacherConflictException | ClassroomConflictException e) {
+                         TeacherConflictException | ClassroomConflictException |
+                         RoomOutageBlockedException e) {
                     String teacherName = request != null ? request.getTeacherName() : null;
                     String classroom = request != null ? request.getClassroom() : null;
                     String timeSlot = request != null ? request.getTimeSlot() : null;
@@ -1085,7 +1108,9 @@ public class CourseScheduleService {
             try {
                 checkBatchTimeSlotExternalConflicts(toUpdate, normalizedToTimeSlot);
                 checkBatchTimeSlotInternalConflicts(toUpdate, normalizedToTimeSlot);
-            } catch (TeacherConflictException | ClassroomConflictException e) {
+                ensureBatchTimeSlotNotBlocked(toUpdate, normalizedToTimeSlot);
+            } catch (TeacherConflictException | ClassroomConflictException
+                     | RoomOutageBlockedException e) {
                 for (CourseSchedule s : toUpdate) {
                     auditLogService.recordLog(
                             OperationType.BATCH_UPDATE_TIME_SLOT,
@@ -1105,6 +1130,7 @@ public class CourseScheduleService {
             List<CourseScheduleResponse> updatedItems = new ArrayList<>();
             for (CourseSchedule schedule : toUpdate) {
                 schedule.setTimeSlot(normalizedToTimeSlot);
+                schedule.setVersion(schedule.getVersion() + 1);
                 updatedItems.add(toResponse(schedule));
                 auditLogService.recordLog(OperationType.BATCH_UPDATE_TIME_SLOT, schedule, true, null);
             }
@@ -1158,33 +1184,53 @@ public class CourseScheduleService {
     /**
      * 原子地应用整份调课方案。
      *
-     * <p>在写锁内重新校验：每条课程仍存在且与方案提交时的快照一致、
-     * 调整后不与方案外课程冲突、方案内部互不冲突。任一校验失败则整份方案
-     * 不生效并返回全部冲突明细；全部通过才一次性应用所有变更。
+     * <p>在写锁内重新校验：每条课程仍存在且与方案提交时的快照/版本一致、
+     * 调整后不与方案外课程冲突、不落入当前生效中的教室停用时段、
+     * 方案内部互不冲突。任一校验失败则整份方案不生效并返回全部冲突明细；
+     * 全部通过才一次性应用所有变更。
      *
      * @return 冲突明细，空列表表示方案已成功应用
      */
     public List<RescheduleConflictDTO> applyRescheduleAtomically(List<ReschedulePlanItem> items) {
+        return applyPlanAtomically(items, OperationType.RESCHEDULE, null, null);
+    }
+
+    /**
+     * 原子地应用成组调课方案（普通调课或停用修复），携带操作类型、处理人员与业务号。
+     *
+     * <p>调用前必须确认业务上允许（修复任务覆盖完整等）；本方法只负责最终的
+     * 版本/教师时间/教室占用/停用范围重检与事务性应用。
+     */
+    public List<RescheduleConflictDTO> applyPlanAtomically(
+            List<? extends PlanChangeItem> items,
+            OperationType operationType,
+            String operator,
+            String refNo
+    ) {
         rwLock.writeLock().lock();
         try {
-            List<RescheduleConflictDTO> conflicts = RescheduleConflictSupport.computeConflicts(schedules, items);
+            List<RoomOutage> activeOutages = outageRegistry.activeOutages();
+            List<RescheduleConflictDTO> conflicts =
+                    RescheduleConflictSupport.computeConflicts(schedules, items, activeOutages);
             if (!conflicts.isEmpty()) {
-                for (ReschedulePlanItem item : items) {
-                    auditLogService.recordLog(OperationType.RESCHEDULE, item.getScheduleId(),
+                for (PlanChangeItem item : items) {
+                    auditLogService.recordLog(operationType, item.getScheduleId(),
                             item.getCourseName(), item.getTeacherName(),
                             item.getNewClassroom(), item.getNewTimeSlot(),
-                            false, "调课方案未生效：存在冲突");
+                            false, "方案未生效：存在冲突", operator, refNo);
                 }
                 return conflicts;
             }
 
             commitUndoSnapshot(takeUndoSnapshot());
-            for (ReschedulePlanItem item : items) {
+            for (PlanChangeItem item : items) {
                 CourseSchedule schedule = findById(item.getScheduleId());
                 schedule.setClassroom(item.getNewClassroom());
                 schedule.setTimeSlot(item.getNewTimeSlot());
-                auditLogService.recordRescheduleLog(
-                        schedule, item.getOriginalClassroom(), item.getOriginalTimeSlot(), true, null);
+                schedule.setVersion(schedule.getVersion() + 1);
+                auditLogService.recordMoveLog(operationType, schedule,
+                        item.getOriginalClassroom(), item.getOriginalTimeSlot(),
+                        true, null, operator, refNo);
             }
             return new ArrayList<>();
         } finally {
@@ -1192,8 +1238,33 @@ public class CourseScheduleService {
         }
     }
 
-    private CourseSchedule copySchedule(CourseSchedule s) {
-        return new CourseSchedule(s.getId(), s.getCourseName(), s.getTeacherName(), s.getClassroom(), s.getTimeSlot());
+    /**
+     * 校验给定教室/时间段是否落入当前生效中的停用时段；调用方须已持有写锁。
+     */
+    private void ensureNotBlockedByOutage(String classroom, String timeSlot) {
+        RoomOutage outage = RoomOutageBlockSupport.findBlockingOutage(
+                outageRegistry.activeOutages(), classroom, timeSlot);
+        if (outage != null) {
+            throw new RoomOutageBlockedException(
+                    RoomOutageBlockSupport.describeBlock(outage, timeSlot));
+        }
+    }
+
+    private void ensureBatchTimeSlotNotBlocked(List<CourseSchedule> toUpdate, String targetTimeSlot) {
+        List<RoomOutage> activeOutages = outageRegistry.activeOutages();
+        for (CourseSchedule moving : toUpdate) {
+            RoomOutage outage = RoomOutageBlockSupport.findBlockingOutage(
+                    activeOutages, moving.getClassroom(), targetTimeSlot);
+            if (outage != null) {
+                throw new RoomOutageBlockedException(
+                        RoomOutageBlockSupport.describeBlock(outage, targetTimeSlot));
+            }
+        }
+    }
+
+    private static CourseSchedule copySchedule(CourseSchedule s) {
+        return new CourseSchedule(s.getId(), s.getCourseName(), s.getTeacherName(),
+                s.getClassroom(), s.getTimeSlot(), s.getVersion());
     }
 
     private void checkBatchTimeSlotExternalConflicts(
@@ -1346,7 +1417,8 @@ public class CourseScheduleService {
                 schedule.getCourseName(),
                 schedule.getTeacherName(),
                 schedule.getClassroom(),
-                schedule.getTimeSlot()
+                schedule.getTimeSlot(),
+                schedule.getVersion()
         );
     }
 

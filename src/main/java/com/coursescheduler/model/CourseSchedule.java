@@ -6,15 +6,22 @@ public class CourseSchedule {
     private String teacherName;
     private String classroom;
     private String timeSlot;
+    /** 课程版本：每次排课内容被修改后递增，用于并发调课的乐观校验。 */
+    private long version = 1;
 
     public CourseSchedule() {}
 
     public CourseSchedule(Long id, String courseName, String teacherName, String classroom, String timeSlot) {
+        this(id, courseName, teacherName, classroom, timeSlot, 1L);
+    }
+
+    public CourseSchedule(Long id, String courseName, String teacherName, String classroom, String timeSlot, long version) {
         this.id = id;
         this.courseName = courseName;
         this.teacherName = teacherName;
         this.classroom = classroom;
         this.timeSlot = timeSlot;
+        this.version = version;
     }
 
     public Long getId() {
@@ -55,5 +62,13 @@ public class CourseSchedule {
 
     public void setTimeSlot(String timeSlot) {
         this.timeSlot = timeSlot;
+    }
+
+    public long getVersion() {
+        return version;
+    }
+
+    public void setVersion(long version) {
+        this.version = version;
     }
 }

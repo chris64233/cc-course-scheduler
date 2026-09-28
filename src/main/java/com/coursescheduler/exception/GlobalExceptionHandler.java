@@ -104,6 +104,64 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(response, HttpStatus.CONFLICT);
     }
 
+    @ExceptionHandler(RoomOutageNotFoundException.class)
+    public ResponseEntity<Map<String, String>> handleRoomOutageNotFoundException(RoomOutageNotFoundException ex) {
+        Map<String, String> response = new HashMap<>();
+        response.put("error", ex.getMessage());
+        return new ResponseEntity<>(response, HttpStatus.NOT_FOUND);
+    }
+
+    @ExceptionHandler(RepairTaskNotFoundException.class)
+    public ResponseEntity<Map<String, String>> handleRepairTaskNotFoundException(RepairTaskNotFoundException ex) {
+        Map<String, String> response = new HashMap<>();
+        response.put("error", ex.getMessage());
+        return new ResponseEntity<>(response, HttpStatus.NOT_FOUND);
+    }
+
+    @ExceptionHandler(RepairPlanNotFoundException.class)
+    public ResponseEntity<Map<String, String>> handleRepairPlanNotFoundException(RepairPlanNotFoundException ex) {
+        Map<String, String> response = new HashMap<>();
+        response.put("error", ex.getMessage());
+        return new ResponseEntity<>(response, HttpStatus.NOT_FOUND);
+    }
+
+    @ExceptionHandler(RoomOutageConflictException.class)
+    public ResponseEntity<Map<String, Object>> handleRoomOutageConflictException(RoomOutageConflictException ex) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("error", ex.getMessage());
+        return new ResponseEntity<>(response, HttpStatus.CONFLICT);
+    }
+
+    @ExceptionHandler(RoomOutageBlockedException.class)
+    public ResponseEntity<Map<String, String>> handleRoomOutageBlockedException(RoomOutageBlockedException ex) {
+        Map<String, String> response = new HashMap<>();
+        response.put("error", ex.getMessage());
+        return new ResponseEntity<>(response, HttpStatus.CONFLICT);
+    }
+
+    @ExceptionHandler(RepairTaskStateException.class)
+    public ResponseEntity<Map<String, String>> handleRepairTaskStateException(RepairTaskStateException ex) {
+        Map<String, String> response = new HashMap<>();
+        response.put("error", ex.getMessage());
+        return new ResponseEntity<>(response, HttpStatus.CONFLICT);
+    }
+
+    @ExceptionHandler(RepairPlanStateException.class)
+    public ResponseEntity<Map<String, String>> handleRepairPlanStateException(RepairPlanStateException ex) {
+        Map<String, String> response = new HashMap<>();
+        response.put("error", ex.getMessage());
+        return new ResponseEntity<>(response, HttpStatus.CONFLICT);
+    }
+
+    @ExceptionHandler(RepairCoverageException.class)
+    public ResponseEntity<Map<String, Object>> handleRepairCoverageException(RepairCoverageException ex) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("error", ex.getMessage());
+        response.put("missingScheduleIds", ex.getMissingScheduleIds());
+        response.put("extraScheduleIds", ex.getExtraScheduleIds());
+        return new ResponseEntity<>(response, HttpStatus.CONFLICT);
+    }
+
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<Map<String, String>> handleHttpMessageNotReadableException(HttpMessageNotReadableException ex) {
         Map<String, String> response = new HashMap<>();

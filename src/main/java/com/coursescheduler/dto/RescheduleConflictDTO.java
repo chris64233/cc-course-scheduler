@@ -17,7 +17,15 @@ public class RescheduleConflictDTO {
         /** 课程在方案提交后已被他人修改 */
         SCHEDULE_CHANGED,
         /** 课程在方案提交后已被删除 */
-        SCHEDULE_NOT_FOUND
+        SCHEDULE_NOT_FOUND,
+        /** 课程版本与提交方案时不一致（并发修改） */
+        VERSION_CONFLICT,
+        /** 新安排落入生效中的教室停用时段 */
+        OUTAGE_BLOCKED,
+        /** 修复方案未覆盖任务中的某门待修复课程 */
+        NOT_COVERED,
+        /** 修复方案引用了不属于该修复任务的课程 */
+        NOT_IN_TASK
     }
 
     private Long scheduleId;

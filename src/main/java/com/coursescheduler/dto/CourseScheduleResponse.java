@@ -6,15 +6,22 @@ public class CourseScheduleResponse {
     private String teacherName;
     private String classroom;
     private String timeSlot;
+    private long version = 1;
 
     public CourseScheduleResponse() {}
 
     public CourseScheduleResponse(Long id, String courseName, String teacherName, String classroom, String timeSlot) {
+        this(id, courseName, teacherName, classroom, timeSlot, 1L);
+    }
+
+    public CourseScheduleResponse(Long id, String courseName, String teacherName,
+                                  String classroom, String timeSlot, long version) {
         this.id = id;
         this.courseName = courseName;
         this.teacherName = teacherName;
         this.classroom = classroom;
         this.timeSlot = timeSlot;
+        this.version = version;
     }
 
     public Long getId() {
@@ -55,5 +62,13 @@ public class CourseScheduleResponse {
 
     public void setTimeSlot(String timeSlot) {
         this.timeSlot = timeSlot;
+    }
+
+    public long getVersion() {
+        return version;
+    }
+
+    public void setVersion(long version) {
+        this.version = version;
     }
 }

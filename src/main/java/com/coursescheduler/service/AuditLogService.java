@@ -4,6 +4,8 @@ import com.coursescheduler.dto.AuditLogFilterRequest;
 import com.coursescheduler.dto.AuditLogResponse;
 import com.coursescheduler.dto.ChangeSummaryResponse;
 import com.coursescheduler.dto.CourseChangeAbnormalDaysDTO;
+import com.coursescheduler.dto.CourseChangeChainResponse;
+import com.coursescheduler.dto.CourseChangeEventDTO;
 import com.coursescheduler.dto.CourseChangeSummaryDTO;
 import com.coursescheduler.dto.CourseChangeTrendDTO;
 import com.coursescheduler.dto.FailureReasonSummaryDTO;
@@ -46,6 +48,20 @@ public class AuditLogService {
     public void recordLog(OperationType operationType, Long courseId, String courseName,
                           String teacherName, String classroom, String timeSlot,
                           boolean success, String errorMessage) {
+        recordLog(operationType, courseId, courseName, teacherName, classroom, timeSlot,
+                success, errorMessage, null, null);
+    }
+
+    /**
+     * 记录一条带处理人员和关联业务号的审计日志。
+     *
+     * @param operator 处理人员
+     * @param refNo    关联业务号（调课/修复 bizKey、停用外部事件号）
+     */
+    public void recordLog(OperationType operationType, Long courseId, String courseName,
+                          String teacherName, String classroom, String timeSlot,
+                          boolean success, String errorMessage,
+                          String operator, String refNo) {
         rwLock.writeLock().lock();
         try {
             AuditLog log = new AuditLog(
@@ -60,6 +76,8 @@ public class AuditLogService {
                     success,
                     errorMessage
             );
+            log.setOperator(operator);
+            log.setRefNo(refNo);
             logs.add(log);
         } finally {
             rwLock.writeLock().unlock();
@@ -84,11 +102,22 @@ public class AuditLogService {
     public void recordRescheduleLog(CourseSchedule schedule,
                                     String previousClassroom, String previousTimeSlot,
                                     boolean success, String errorMessage) {
+        recordMoveLog(OperationType.RESCHEDULE, schedule, previousClassroom, previousTimeSlot,
+                success, errorMessage, null, null);
+    }
+
+    /**
+     * 记录课程移动审计日志（普通调课或停用修复），携带处理人员与关联业务号。
+     */
+    public void recordMoveLog(OperationType operationType, CourseSchedule schedule,
+                              String previousClassroom, String previousTimeSlot,
+                              boolean success, String errorMessage,
+                              String operator, String refNo) {
         rwLock.writeLock().lock();
         try {
             AuditLog log = new AuditLog(
                     idGenerator++,
-                    OperationType.RESCHEDULE,
+                    operationType,
                     LocalDateTime.now(clock),
                     schedule != null ? schedule.getId() : null,
                     schedule != null ? schedule.getCourseName() : null,
@@ -100,6 +129,8 @@ public class AuditLogService {
             );
             log.setPreviousClassroom(previousClassroom);
             log.setPreviousTimeSlot(previousTimeSlot);
+            log.setOperator(operator);
+            log.setRefNo(refNo);
             logs.add(log);
         } finally {
             rwLock.writeLock().unlock();
@@ -260,7 +291,48 @@ public class AuditLogService {
         );
         response.setPreviousClassroom(log.getPreviousClassroom());
         response.setPreviousTimeSlot(log.getPreviousTimeSlot());
+        response.setOperator(log.getOperator());
+        response.setRefNo(log.getRefNo());
         return response;
+    }
+
+    /**
+     * 查询一门课程的完整变更链（按时间先后排列）：新增、修改、普通调课、
+     * 停用冻结、成组修复等事件，包含处理人员与关联业务号。
+     */
+    public CourseChangeChainResponse getChangeChain(Long courseId) {
+        rwLock.readLock().lock();
+        try {
+            List<CourseChangeEventDTO> events = logs.stream()
+                    .filter(log -> courseId.equals(log.getCourseId()))
+                    .sorted(Comparator.comparing(AuditLog::getTimestamp)
+                            .thenComparing(AuditLog::getId))
+                    .map(this::toChangeEvent)
+                    .collect(Collectors.toList());
+            String courseName = logs.stream()
+                    .filter(log -> courseId.equals(log.getCourseId()) && log.getCourseName() != null)
+                    .map(AuditLog::getCourseName)
+                    .reduce((first, second) -> second)
+                    .orElse(null);
+            return new CourseChangeChainResponse(courseId, courseName, events);
+        } finally {
+            rwLock.readLock().unlock();
+        }
+    }
+
+    private CourseChangeEventDTO toChangeEvent(AuditLog log) {
+        CourseChangeEventDTO event = new CourseChangeEventDTO();
+        event.setOperationType(log.getOperationType());
+        event.setTimestamp(log.getTimestamp());
+        event.setSuccess(log.isSuccess());
+        event.setPreviousClassroom(log.getPreviousClassroom());
+        event.setPreviousTimeSlot(log.getPreviousTimeSlot());
+        event.setClassroom(log.getClassroom());
+        event.setTimeSlot(log.getTimeSlot());
+        event.setOperator(log.getOperator());
+        event.setRefNo(log.getRefNo());
+        event.setErrorMessage(log.getErrorMessage());
+        return event;
     }
 
     private ChangeSummaryResponse toSummaryResponse(AuditLog log) {

@@ -50,15 +50,21 @@ import java.util.stream.Collectors;
 public class ReschedulePlanService {
 
     private final CourseScheduleService courseScheduleService;
+    private final RoomOutageRegistry outageRegistry;
     private final Clock clock;
 
     private final Map<String, ReschedulePlan> plansByBizKey = new LinkedHashMap<>();
-    private final ReadWriteLock rwLock = new ReentrantReadWriteLock();
+    private final ReadWriteLock rwLock;
     private long idGenerator = 1;
 
     @Autowired
-    public ReschedulePlanService(CourseScheduleService courseScheduleService, Clock clock) {
+    public ReschedulePlanService(CourseScheduleService courseScheduleService,
+                                 RoomOutageRegistry outageRegistry,
+                                 SchedulingLocks schedulingLocks,
+                                 Clock clock) {
         this.courseScheduleService = courseScheduleService;
+        this.outageRegistry = outageRegistry;
+        this.rwLock = schedulingLocks.getLock();
         this.clock = clock;
     }
 
@@ -159,7 +165,8 @@ public class ReschedulePlanService {
                         snapshot.getClassroom(),
                         snapshot.getTimeSlot(),
                         normalizedClassrooms.get(i),
-                        normalizedTimeSlots.get(i)));
+                        normalizedTimeSlots.get(i),
+                        snapshot.getVersion()));
             }
 
             ReschedulePlan plan = new ReschedulePlan();
@@ -185,7 +192,8 @@ public class ReschedulePlanService {
 
             List<CourseSchedule> snapshot = courseScheduleService.snapshotAllSchedules();
             List<RescheduleConflictDTO> conflicts =
-                    RescheduleConflictSupport.computeConflicts(snapshot, plan.getItems());
+                    RescheduleConflictSupport.computeConflicts(
+                            snapshot, plan.getItems(), outageRegistry.activeOutages());
 
             plan.setConflicts(conflicts);
             plan.setResultMessage(conflicts.isEmpty() ? "预检查通过，方案可以确认" : "预检查发现 " + conflicts.size() + " 项冲突");

@@ -41,8 +41,11 @@ class ReschedulePlanServiceTest {
     @BeforeEach
     void setUp() {
         auditLogService = new AuditLogService(Clock.systemDefaultZone());
-        scheduleService = new CourseScheduleService(auditLogService);
-        planService = new ReschedulePlanService(scheduleService, Clock.systemDefaultZone());
+        SchedulingLocks schedulingLocks = new SchedulingLocks();
+        RoomOutageRegistry outageRegistry = new RoomOutageRegistry();
+        scheduleService = new CourseScheduleService(auditLogService, outageRegistry, schedulingLocks);
+        planService = new ReschedulePlanService(scheduleService, outageRegistry,
+                schedulingLocks, Clock.systemDefaultZone());
     }
 
     private CourseScheduleResponse addSchedule(String courseName, String teacherName, String classroom, String timeSlot) {

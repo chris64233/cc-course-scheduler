@@ -15,6 +15,10 @@ public class AuditLog {
     private String errorMessage;
     private String previousClassroom;
     private String previousTimeSlot;
+    /** 处理人员 */
+    private String operator;
+    /** 关联业务号：调课/修复 bizKey 或停用外部事件号 */
+    private String refNo;
 
     public AuditLog() {}
 
@@ -127,5 +131,21 @@ public class AuditLog {
 
     public void setPreviousTimeSlot(String previousTimeSlot) {
         this.previousTimeSlot = previousTimeSlot;
+    }
+
+    public String getOperator() {
+        return operator;
+    }
+
+    public void setOperator(String operator) {
+        this.operator = operator;
+    }
+
+    public String getRefNo() {
+        return refNo;
+    }
+
+    public void setRefNo(String refNo) {
+        this.refNo = refNo;
     }
 }
